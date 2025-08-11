@@ -560,12 +560,32 @@ async def ws_endpoint(ws: WebSocket):
 	user_id = payload["sub"]
 	await manager.connect(ws, user_id)
 
-	# Envia snapshot inicial
+	def regen_and_fetch(user_id_: int) -> sqlite3.Row:
+		conn_local = get_db()
+		cur_local = conn_local.execute("SELECT * FROM users WHERE id=?", (user_id_,))
+		u = cur_local.fetchone()
+		if not u:
+			conn_local.close()
+			return None
+		stored, last_regen = regen_stored_pixels(u)
+		if stored != u["stored_pixels"]:
+			conn_local.execute(
+				"UPDATE users SET stored_pixels=?, last_regen_ts=? WHERE id=?",
+				(stored, last_regen, user_id_),
+			)
+			conn_local.commit()
+			cur_local = conn_local.execute("SELECT * FROM users WHERE id=?", (user_id_,))
+			u = cur_local.fetchone()
+		conn_local.close()
+		return u
+
+	# Envia snapshot inicial + dados do usuário
 	conn = get_db()
 	total_pixels = get_total_pixels(conn)
 	cur = conn.execute("SELECT username, pixels_placed FROM users ORDER BY pixels_placed DESC, id ASC LIMIT ?", (CONFIG["RANKING_TOP_N"],))
 	ranking = [dict(row) for row in cur.fetchall()]
 	conn.close()
+	user_row_initial = regen_and_fetch(user_id)
 	await ws.send_json({
 		"type": "init",
 		"width": CONFIG["BOARD_WIDTH"],
@@ -573,6 +593,7 @@ async def ws_endpoint(ws: WebSocket):
 		"boardRows": board_mem,  # simples: lista de listas
 		"totalPixels": total_pixels,
 		"ranking": ranking,
+		"user": serialize_user(user_row_initial) if user_row_initial else None,
 	})
 	try:
 		while True:
@@ -644,6 +665,10 @@ async def ws_endpoint(ws: WebSocket):
 				})
 				await send_ranking()
 			elif msg_type == "ping":
+				# Aproveita ping para atualizar regeneração do usuário
+				updated = regen_and_fetch(user_id)
+				if updated:
+					await ws.send_json({"type": "me", "user": serialize_user(updated)})
 				await ws.send_json({"type": "pong", "t": time.time()})
 	except WebSocketDisconnect:
 		await manager.disconnect(ws)
