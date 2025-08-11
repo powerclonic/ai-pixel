@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <title>Pixel Place Game</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <link rel="stylesheet" href="https://unpkg.com/@picocss/pico@2.0.6/css/pico.min.css" />
+  <style>
+    :root { --hud-bg: rgba(0,0,0,0.55); }
+    html,body { height:100%; margin:0; background:#111; color:#eee; overflow:hidden; font-family:system-ui, sans-serif; }
+    #canvasContainer { position:fixed; inset:0; display:flex; align-items:center; justify-content:center; }
+    #board { image-rendering: pixelated; cursor:crosshair; background:#222; box-shadow:0 0 0 1px #333; }
+    #fabBar { position:fixed; top:.75rem; left:.75rem; display:flex; gap:.5rem; flex-wrap:wrap; z-index:50; }
+    #fabBar button { font-size:.7rem; padding:.45rem .7rem; }
+    #hud { position:fixed; bottom:.6rem; left:.6rem; background:var(--hud-bg); backdrop-filter:blur(5px); padding:.55rem .8rem; border-radius:.6rem; font-size:.7rem; line-height:1.25; z-index:40; }
+    #cooldownBar,#storedPixelsBar { height:6px; background:#333; margin-top:4px; position:relative; border-radius:3px; overflow:hidden; }
+    #cooldownFill { position:absolute; top:0; left:0; bottom:0; width:0%; background:#ff9800; }
+    #storedPixelsFill { position:absolute; top:0; left:0; bottom:0; width:0%; background:#4caf50; }
+    #boardCoords { position:fixed; top:.6rem; right:.8rem; background:var(--hud-bg); padding:.35rem .7rem; border-radius:.5rem; font-size:.7rem; z-index:40; }
+    dialog { max-width:520px; }
+    #palette button,#extraColors button { width:26px; height:26px; padding:0; border:1px solid #000; }
+    #extraColors, #palette { display:flex; flex-wrap:wrap; gap:4px; }
+    #rankingList { max-height:320px; overflow:auto; font-size:.85rem; }
+    .outline { outline:2px dashed #666; }
+    .dialog-footer { display:flex; gap:.5rem; flex-wrap:wrap; }
+  </style>
+</head>
+<body>
+  <div id="canvasContainer"><canvas id="board" width="256" height="144"></canvas></div>
+  <div id="fabBar">
+    <button id="btnAuth" class="secondary"></button>
+    <button id="openPalette">Paleta</button>
+    <button id="openRanking">Ranking</button>
+    <button id="openInfo">Info</button>
+  </div>
+  <div id="boardCoords"></div>
+  <div id="hud">
+    <div><strong>Players:</strong> <span id="playerCount">0</span> | <strong>Pixels:</strong> <span id="totalPixelsHUD">0</span></div>
+    <div>Cooldown: <span id="cooldownText">pronto</span> | Stash: <span id="storedPixels">0</span>/<span id="capacity">0</span> | Créditos: <span id="credits">0</span> | Ping: <span id="latency">-</span>ms</div>
+    <div id="cooldownBar"><div id="cooldownFill"></div></div>
+    <div id="storedPixelsBar"><div id="storedPixelsFill"></div></div>
+  </div>
+
+  <!-- Dialogs -->
+  <dialog id="authDialog"><article><h3>Entrar / Registrar</h3><form id="authForm"><input name="username" placeholder="Usuário" minlength="3" maxlength="20" required /><input name="password" placeholder="Senha" type="password" minlength="4" required /><footer class="dialog-footer"><button value="register">Registrar</button><button value="login">Login</button><button type="button" class="secondary" onclick="authDialog.close()">Fechar</button></footer></form></article></dialog>
+  <dialog id="paletteDialog"><article><header><h3>Paleta & Upgrades</h3></header><section><h6>Paleta Base</h6><div id="palette"></div><h6 style="margin-top:.75rem">Cores Extras</h6><div id="extraColors"></div><button id="buyColorBtn" class="secondary" disabled style="margin-top:.5rem">Comprar cor selecionada (<span id="colorCost"></span>)</button><hr /><button id="upgradeCapacityBtn" class="contrast" disabled>Upgrade Capacidade (<span id="capacityUpgradeCost"></span>)</button></section><footer class="dialog-footer"><button onclick="paletteDialog.close()" class="secondary">Fechar</button></footer></article></dialog>
+  <dialog id="rankingDialog"><article><header><h3>Ranking</h3></header><ol id="rankingList"></ol><footer class="dialog-footer"><button onclick="rankingDialog.close()" class="secondary">Fechar</button></footer></article></dialog>
+  <dialog id="infoDialog"><article><header><h3>Info</h3></header><p>r/place simplificado. 1 crédito por pixel. Use créditos para cores e capacidade.</p><p>Compartilhe coordenadas: URL ?x=..&y=..</p><ul style="font-size:.75rem; opacity:.8"><li>[P] Paleta</li><li>[R] Ranking</li><li>[I] Info</li><li>[ESC] Fecha</li></ul><footer class="dialog-footer"><button onclick="infoDialog.close()" class="secondary">Fechar</button></footer></article></dialog>
+
+<script>
+const $ = s=>document.querySelector(s);
+const board=$('#board'); const ctx=board.getContext('2d');
+let config, me, ws, selectedColor=null, lastCooldownEnd=0, baseCooldown=5, boardW=256, boardH=144, allowedColors=[], extraColors=[], boughtColors=new Set(), pingStart=0;
+let viewScale=4, minScale=1, maxScale=40, offsetX=0, offsetY=0; let isPanning=false; let panStart={x:0,y:0,ox:0,oy:0,moved:false};
+const offscreen=document.createElement('canvas'); const offctx=offscreen.getContext('2d');
+function qs(){ return new URLSearchParams(location.search); }
+function updateURLCoords(x,y){ const p=qs(); p.set('x',x); p.set('y',y); history.replaceState(null,'','?'+p.toString()); }
+function updateMinScale(){ minScale = Math.min(window.innerWidth/boardW, window.innerHeight/boardH); if(viewScale<minScale){ viewScale=minScale; centerBoard(); }}
+function centerBoard(){ const visibleW=window.innerWidth/viewScale, visibleH=window.innerHeight/viewScale; if(visibleW>=boardW) offsetX=(boardW-visibleW)/2; else offsetX=Math.min(Math.max(0,offsetX), boardW-visibleW); if(visibleH>=boardH) offsetY=(boardH-visibleH)/2; else offsetY=Math.min(Math.max(0,offsetY), boardH-visibleH); }
+function constrainView(){ centerBoard(); }
+function redraw(){ ctx.imageSmoothingEnabled=false; ctx.clearRect(0,0,board.width,board.height); const vw=window.innerWidth/viewScale, vh=window.innerHeight/viewScale; ctx.drawImage(offscreen, offsetX, offsetY, vw, vh, 0, 0, board.width, board.height); }
+function drawBoardRows(rows){ offscreen.width=boardW; offscreen.height=boardH; for(let y=0;y<rows.length;y++){ const line=rows[y]; for(let x=0;x<line.length;x++){ offctx.fillStyle=line[x]; offctx.fillRect(x,y,1,1);} } resizeCanvas(); }
+function setPixel(x,y,color){ offctx.fillStyle=color; offctx.fillRect(x,y,1,1); redraw(); }
+function resizeCanvas(){ board.width=window.innerWidth; board.height=window.innerHeight; updateMinScale(); constrainView(); redraw(); }
+window.addEventListener('resize', resizeCanvas);
+function buildPalette(){ const pal=$('#palette'); pal.innerHTML=''; allowedColors.forEach(c=>{ const b=document.createElement('button'); b.style.background=c; b.title=c; b.onclick=()=>{selectedColor=c; highlightPalette();}; pal.appendChild(b);}); highlightPalette(); }
+function buildExtraColors(){ const ec=$('#extraColors'); ec.innerHTML=''; extraColors.forEach(c=>{ const b=document.createElement('button'); b.style.background=c; b.title=c; if(!boughtColors.has(c)) b.classList.add('outline'); b.onclick=()=>{selectedColor=c; highlightPalette(); updateBuyColorBtn();}; ec.appendChild(b); }); }
+function highlightPalette(){ [...document.querySelectorAll('#palette button,#extraColors button')].forEach(btn=>{ btn.style.outline=(btn.style.background.toUpperCase()===(selectedColor||'').toUpperCase())?'2px solid #fff':'none'; }); }
+function updateStatus(){ if(!me) return; $('#storedPixels').textContent=me.storedPixels; $('#capacity').textContent=me.capacity; $('#credits').textContent=me.credits; const pct=(me.capacity?(me.storedPixels/me.capacity)*100:0); $('#storedPixelsFill').style.width=pct+'%'; }
+function updateCooldownUI(){ const rem=Math.max(0,lastCooldownEnd-Date.now()/1000); if(rem>0){ $('#cooldownText').textContent=rem.toFixed(1)+'s'; $('#cooldownFill').style.width=(1-rem/baseCooldown)*100+'%'; } else { $('#cooldownText').textContent='pronto'; $('#cooldownFill').style.width='100%'; } }
+setInterval(updateCooldownUI,100);
+async function fetchJSON(u){ const r=await fetch(u); if(!r.ok) throw new Error(await r.text()); return r.json(); }
+async function postJSON(u,b){ const r=await fetch(u,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b||{})}); if(!r.ok) throw new Error(await r.text()); return r.json(); }
+async function loadConfig(){ config=await fetchJSON('/api/config'); $('#colorCost').textContent=config.colorCost; $('#capacityUpgradeCost').textContent=config.capacityUpgradeCost; boardW=config.width; boardH=config.height; allowedColors=config.basePalette.slice(); extraColors=config.extraColors.slice(); baseCooldown=config.baseCooldown; buildPalette(); buildExtraColors(); }
+async function loadMe(){ try{ me=await fetchJSON('/api/me'); boughtColors=new Set(me.boughtColors); updateStatus(); buildExtraColors(); enableUI(); }catch{ me=null; disableUI(); } }
+function enableUI(){ $('#btnAuth').textContent= me? me.username+' (sair)':'Entrar'; $('#upgradeCapacityBtn').disabled=!me; }
+function disableUI(){ $('#btnAuth').textContent='Entrar'; }
+async function initBoard(){ const snap=await fetchJSON('/api/board'); const rows=[]; snap.rle.forEach(rle=>{ const line=[]; rle.forEach(([color,count])=>{ for(let i=0;i<count;i++) line.push(color);}); rows.push(line); }); drawBoardRows(rows); }
+function connectWS(){ if(!me) return; ws=new WebSocket((location.protocol==='https:'?'wss':'ws')+'://'+location.host+'/ws'); ws.onopen=()=>{ pingStart=performance.now(); ws.send(JSON.stringify({type:'ping'})); }; ws.onmessage=e=>{ const m=JSON.parse(e.data); if(m.type==='init'){ drawBoardRows(m.boardRows); $('#totalPixelsHUD').textContent=m.totalPixels; updateRanking(m.ranking); const p=qs(); const x=p.get('x'), y=p.get('y'); if(x&&y) highlightCoord(+x,+y); } else if(m.type==='pixel'){ setPixel(m.x,m.y,m.color); $('#totalPixelsHUD').textContent=m.totalPixels; ws.send(JSON.stringify({type:'ping'})); loadMe(); } else if(m.type==='player_count'){ $('#playerCount').textContent=m.count; } else if(m.type==='ranking'){ updateRanking(m.ranking); } else if(m.type==='cooldown'){ lastCooldownEnd=Date.now()/1000+m.remaining; } else if(m.type==='pong'){ $('#latency').textContent=Math.round(performance.now()-pingStart); setTimeout(()=>{ pingStart=performance.now(); ws.send(JSON.stringify({type:'ping'})); },5000); } }; ws.onclose=()=>setTimeout(connectWS,3000); }
+function updateRanking(list){ const el=$('#rankingList'); el.innerHTML=''; list.forEach(r=>{ const li=document.createElement('li'); li.textContent=r.username+': '+r.pixels_placed; el.appendChild(li); }); }
+board.addEventListener('mousemove', e=>{ const rect=board.getBoundingClientRect(); const relX=e.clientX-rect.left, relY=e.clientY-rect.top; const x=Math.floor(offsetX + relX/viewScale); const y=Math.floor(offsetY + relY/viewScale); $('#boardCoords').textContent=`(${x},${y}) ${selectedColor||''}`; });
+board.addEventListener('mousedown', e=>{ if(e.button===0){ isPanning=true; panStart={x:e.clientX,y:e.clientY,ox:offsetX,oy:offsetY,moved:false}; } else if(e.button===1||e.button===2){ isPanning=true; panStart={x:e.clientX,y:e.clientY,ox:offsetX,oy:offsetY,moved:false}; e.preventDefault(); }});
+window.addEventListener('mousemove', e=>{ if(isPanning){ const dx=(e.clientX-panStart.x)/viewScale; const dy=(e.clientY-panStart.y)/viewScale; if(Math.abs(dx)>0.5||Math.abs(dy)>0.5) panStart.moved=true; offsetX=panStart.ox - dx; offsetY=panStart.oy - dy; constrainView(); redraw(); }});
+window.addEventListener('mouseup', ()=>{ isPanning=false; });
+board.addEventListener('click', e=>{ if(isPanning && panStart.moved) return; if(!me||!selectedColor) return; const rect=board.getBoundingClientRect(); const relX=e.clientX-rect.left, relY=e.clientY-rect.top; const x=Math.floor(offsetX + relX/viewScale); const y=Math.floor(offsetY + relY/viewScale); updateURLCoords(x,y); ws?.send(JSON.stringify({type:'place',x,y,color:selectedColor})); lastCooldownEnd=Date.now()/1000+baseCooldown; });
+board.addEventListener('wheel', e=>{ e.preventDefault(); const direction=Math.sign(e.deltaY); const old=viewScale; if(direction>0) viewScale=Math.max(minScale, viewScale/1.15); else viewScale=Math.min(maxScale, viewScale*1.15); const rect=board.getBoundingClientRect(); const cx=(e.clientX-rect.left)/old + offsetX; const cy=(e.clientY-rect.top)/old + offsetY; offsetX = cx - (e.clientX-rect.left)/viewScale; offsetY = cy - (e.clientY-rect.top)/viewScale; constrainView(); redraw(); }, {passive:false});
+window.addEventListener('contextmenu', e=>{ if(e.target===board) e.preventDefault(); });
+function highlightCoord(x,y){ ctx.save(); ctx.strokeStyle='rgba(255,255,255,0.85)'; ctx.lineWidth=0.5; ctx.strokeRect(x+0.05,y+0.05,0.9,0.9); ctx.restore(); }
+$('#btnAuth').addEventListener('click',async e=>{ e.preventDefault(); if(me){ await fetch('/api/logout',{method:'POST'}); me=null; disableUI(); location.reload(); return; } authDialog.showModal(); });
+$('#authForm').addEventListener('submit',async e=>{ e.preventDefault(); const fd=new FormData(e.target); const body={username:fd.get('username'),password:fd.get('password')}; const action=e.submitter.value; try{ await postJSON('/api/'+action, body); authDialog.close(); await loadMe(); connectWS(); }catch(err){ alert('Erro: '+err); } });
+$('#buyColorBtn').addEventListener('click',async ()=>{ if(!selectedColor) return; try{ await postJSON('/api/buy_color',{color:selectedColor}); await loadMe(); boughtColors=new Set(me.boughtColors); allowedColors=config.basePalette.concat([...boughtColors]); buildPalette(); buildExtraColors(); updateBuyColorBtn(); }catch(e){ alert('Erro: '+e); } });
+$('#upgradeCapacityBtn').addEventListener('click',async ()=>{ try{ await postJSON('/api/upgrade_capacity',{}); await loadMe(); }catch(e){ alert('Erro: '+e); } });
+function updateBuyColorBtn(){ const btn=$('#buyColorBtn'); btn.disabled=!selectedColor || !extraColors.includes(selectedColor) || boughtColors.has(selectedColor) || !me; }
+$('#openPalette').onclick=()=>paletteDialog.showModal();
+$('#openRanking').onclick=()=>rankingDialog.showModal();
+$('#openInfo').onclick=()=>infoDialog.showModal();
+function hotkeysEnabled(){ const ae=document.activeElement; const typing=ae && (ae.tagName==='INPUT'||ae.tagName==='TEXTAREA'||ae.isContentEditable); return !typing && !authDialog.open; }
+window.addEventListener('keydown', e=>{ if(!hotkeysEnabled()) return; if(e.key==='p'||e.key==='P'){ paletteDialog.open?paletteDialog.close():paletteDialog.showModal(); } else if(e.key==='r'||e.key==='R'){ rankingDialog.open?rankingDialog.close():rankingDialog.showModal(); } else if(e.key==='i'||e.key==='I'){ infoDialog.open?infoDialog.close():infoDialog.showModal(); } else if(e.key==='Escape'){ [paletteDialog,rankingDialog,infoDialog,authDialog].forEach(d=>d.open&&d.close()); } });
+async function init(){ await loadConfig(); await loadMe(); await initBoard(); resizeCanvas(); connectWS(); if(!me) authDialog.showModal(); }
+init();
+</script>
+</body>
+</html>
+
+<script>
+// Refresh leve da stash para mostrar regeneração sem precisar de ação do usuário
+async function refreshMeLight(){
+  if(!me) return;
+  try {
+    const u = await fetch('/api/me');
+    if(!u.ok) return;
+    const data = await u.json();
+    // Atualiza apenas campos voláteis
+    me.storedPixels = data.storedPixels;
+    me.capacity = data.capacity;
+    me.credits = data.credits;
+    updateStatus();
+  } catch(_) {}
+}
+setInterval(refreshMeLight, 3000); // a cada 3s
+</script>
+
+function connectWS(){
+  if(!me) return;
+  ws = new WebSocket((location.protocol==='https:'?'wss':'ws')+'://'+location.host+'/ws');
+  ws.onopen=()=>{ pingStart = performance.now(); ws.send(JSON.stringify({type:'ping'})); };
+  ws.onmessage = ev => {
+    const msg = JSON.parse(ev.data);
+    if(msg.type==='init'){
+      drawBoardRows(msg.boardRows);
+      $('#totalPixels').textContent = msg.totalPixels;
+      updateRanking(msg.ranking);
+      const p = qsParams(); const x=p.get('x'); const y=p.get('y'); if(x&&y){ highlightCoord(Number(x),Number(y)); }
+    } else if(msg.type==='pixel'){
+      setPixel(msg.x,msg.y,msg.color); $('#totalPixels').textContent = msg.totalPixels; ws.send(JSON.stringify({type:'ping'}));
+      // refresh user stats
+      loadMe();
+    } else if(msg.type==='player_count'){
+      $('#playerCount').textContent = msg.count;
+    } else if(msg.type==='ranking'){
+      updateRanking(msg.ranking);
+    } else if(msg.type==='cooldown'){
+      lastCooldownEnd = Date.now()/1000 + msg.remaining; 
+    } else if(msg.type==='pong'){
+      const rtt = performance.now()-pingStart; $('#latency').textContent = Math.round(rtt); setTimeout(()=>{ pingStart=performance.now(); ws.send(JSON.stringify({type:'ping'}));}, 5000);
+    } else if(msg.type==='error'){
+      console.warn(msg.error);
+    }
+  };
+  ws.onclose=()=>{ setTimeout(connectWS, 3000); };
+}
+
+function updateRanking(list){
+  const el = $('#rankingList'); el.innerHTML='';
+  list.forEach(r=>{ const li=document.createElement('li'); li.textContent = r.username+': '+r.pixels_placed; el.appendChild(li); });
+}
+
+board.addEventListener('mousemove', e=>{
+  const rect = board.getBoundingClientRect();
+  const scaleX = board.width / rect.width; const scaleY = board.height / rect.height;
+  const x = Math.floor((e.clientX - rect.left)*scaleX);
+  const y = Math.floor((e.clientY - rect.top)*scaleY);
+  $('#boardCoords').textContent = `(${x},${y}) ${selectedColor||''}`;
+});
+board.addEventListener('click', e=>{
+  if(!me || !selectedColor) return;
+  const rect = board.getBoundingClientRect();
+  const scaleX=board.width/rect.width; const scaleY=board.height/rect.height;
+  const x=Math.floor((e.clientX-rect.left)*scaleX);
+  const y=Math.floor((e.clientY-rect.top)*scaleY);
+  updateURLCoords(x,y);
+  ws?.send(JSON.stringify({type:'place', x, y, color:selectedColor}));
+  lastCooldownEnd = Date.now()/1000 + baseCooldown; // pessimista até resposta real
+});
+
+function highlightCoord(x,y){
+  ctx.save(); ctx.strokeStyle='rgba(255,255,255,0.8)'; ctx.lineWidth=0.5; ctx.strokeRect(x+0.05,y+0.05,0.9,0.9); ctx.restore();
+}
+
+$('#btnAuth').addEventListener('click', async e=>{
+  e.preventDefault();
+  if(me){ await fetch('/api/logout',{method:'POST'}); me=null; disableUI(); location.reload(); return; }
+  authDialog.showModal();
+});
+
+$('#authForm').addEventListener('submit', async e=>{
+  // Atualização periódica da stash para refletir regeneração passiva sem ações do usuário
+  async function refreshMeLight(){
+    if(!me) return;
+    try {
+      const r = await fetch('/api/me');
+      if(!r.ok) return;
+      const d = await r.json();
+      me.storedPixels = d.storedPixels;
+      me.capacity = d.capacity;
+      me.credits = d.credits;
+      updateStatus();
+    } catch(e) { /* silencioso */ }
+  }
+  setInterval(refreshMeLight, 2000); // a cada 2s (regen default = 5s)
+
+  e.preventDefault();
+  const fd = new FormData(e.target); const body={username:fd.get('username'), password:fd.get('password')};
+  const action = e.submitter.value;
+  try{ await postJSON('/api/'+action, body); authDialog.close(); await loadMe(); connectWS(); }catch(err){ alert('Erro: '+ err); }
+});
+
+$('#buyColorBtn').addEventListener('click', async ()=>{
+  if(!selectedColor) return;
+  try{ await postJSON('/api/buy_color',{color:selectedColor}); await loadMe(); boughtColors = new Set(me.boughtColors); allowedColors=config.basePalette.concat([...boughtColors]); buildPalette(); buildExtraColors(); updateBuyColorBtn(); }catch(e){ alert('Erro: '+e); }
+});
+
+$('#upgradeCapacityBtn').addEventListener('click', async ()=>{
+  try{ await postJSON('/api/upgrade_capacity',{}); await loadMe(); } catch(e){ alert('Erro: '+e); }
+});
+
+function updateBuyColorBtn(){
+  const btn = $('#buyColorBtn');
+  if(!selectedColor || !extraColors.includes(selectedColor) || boughtColors.has(selectedColor)){ btn.disabled=true; return; }
+  btn.disabled = me ? false : true;
+}
+
+async function init(){
+  await loadConfig(); await loadMe(); await initBoard(); connectWS();
+  if(!me) authDialog.showModal();
+}
+init();
+</script>
+</body>
+</html>
