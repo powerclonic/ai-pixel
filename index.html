@@ -71,7 +71,23 @@ function updateMinScale(){ minScale = Math.min(window.innerWidth/boardW, window.
 function centerBoard(){ const visibleW=window.innerWidth/viewScale, visibleH=window.innerHeight/viewScale; if(visibleW>=boardW) offsetX=(boardW-visibleW)/2; else offsetX=Math.min(Math.max(0,offsetX), boardW-visibleW); if(visibleH>=boardH) offsetY=(boardH-visibleH)/2; else offsetY=Math.min(Math.max(0,offsetY), boardH-visibleH); }
 function constrainView(){ centerBoard(); }
 function redraw(){ ctx.imageSmoothingEnabled=false; ctx.clearRect(0,0,board.width,board.height); const vw=window.innerWidth/viewScale, vh=window.innerHeight/viewScale; ctx.drawImage(offscreen, offsetX, offsetY, vw, vh, 0, 0, board.width, board.height); }
-function drawBoardRows(rows){ offscreen.width=boardW; offscreen.height=boardH; for(let y=0;y<rows.length;y++){ const line=rows[y]; for(let x=0;x<line.length;x++){ offctx.fillStyle=line[x]; offctx.fillRect(x,y,1,1);} } resizeCanvas(); }
+function drawBoardSparse(defaultColor, pixels){
+  offscreen.width=boardW; offscreen.height=boardH;
+  // Fill once with default color
+  offctx.fillStyle=defaultColor; offctx.fillRect(0,0,boardW,boardH);
+  // Draw changed pixels in chunks to avoid blocking
+  const batchSize=15000; let i=0;
+  function drawBatch(){
+    const end=Math.min(i+batchSize, pixels.length);
+    for(;i<end;i++){
+      const [x,y,color]=pixels[i];
+      offctx.fillStyle=color;
+      offctx.fillRect(x,y,1,1);
+    }
+    if(i<pixels.length) requestAnimationFrame(drawBatch); else { resizeCanvas(); }
+  }
+  drawBatch();
+}
 function setPixel(x,y,color){ offctx.fillStyle=color; offctx.fillRect(x,y,1,1); redraw(); }
 function resizeCanvas(){ board.width=window.innerWidth; board.height=window.innerHeight; updateMinScale(); constrainView(); redraw(); }
 window.addEventListener('resize', resizeCanvas);
@@ -95,8 +111,8 @@ async function loadConfig(){ config=await fetchJSON('/api/config'); $('#colorCos
 async function loadMe(){ try{ me=await fetchJSON('/api/me'); boughtColors=new Set(me.boughtColors); updateStatus(); buildExtraColors(); enableUI(); }catch{ me=null; disableUI(); } }
 function enableUI(){ $('#btnAuth').textContent= me? me.username+' (logout)':'Login'; $('#upgradeCapacityBtn').disabled=!me; }
 function disableUI(){ $('#btnAuth').textContent='Login'; }
-async function initBoard(){ const snap=await fetchJSON('/api/board'); const rows=[]; snap.rle.forEach(rle=>{ const line=[]; rle.forEach(([color,count])=>{ for(let i=0;i<count;i++) line.push(color);}); rows.push(line); }); drawBoardRows(rows); }
-function connectWS(){ if(!me) return; ws=new WebSocket((location.protocol==='https:'?'wss':'ws')+'://'+location.host+'/ws'); ws.onopen=()=>{ pingStart=performance.now(); ws.send(JSON.stringify({type:'ping'})); }; ws.onmessage=e=>{ const m=JSON.parse(e.data); if(m.type==='init'){ if(m.user){ me=m.user; boughtColors=new Set(me.boughtColors); lastPlaceTs=me.lastPlaceTs; updateStatus(); buildLivePalette(); buildExtraColors(); enableUI(); } drawBoardRows(m.boardRows); $('#totalPixelsHUD').textContent=m.totalPixels; updateRanking(m.ranking); const p=qs(); const x=p.get('x'), y=p.get('y'); if(x&&y) highlightCoord(+x,+y); } else if(m.type==='pixel'){ setPixel(m.x,m.y,m.color); $('#totalPixelsHUD').textContent=m.totalPixels; ws.send(JSON.stringify({type:'ping'})); } else if(m.type==='player_count'){ $('#playerCount').textContent=m.count; } else if(m.type==='ranking'){ updateRanking(m.ranking); } else if(m.type==='cooldown'){ cooldownOverrideRemaining=m.remaining; } else if(m.type==='me'){ if(m.user){ me=m.user; boughtColors=new Set(me.boughtColors); lastPlaceTs=me.lastPlaceTs; updateStatus(); buildLivePalette(); buildExtraColors(); }} else if(m.type==='pong'){ $('#latency').textContent=Math.round(performance.now()-pingStart); setTimeout(()=>{ pingStart=performance.now(); ws.send(JSON.stringify({type:'ping'})); },5000); } }; ws.onclose=()=>setTimeout(connectWS,3000); }
+async function initBoard(){ const snap=await fetchJSON('/api/board'); boardW=snap.width; boardH=snap.height; drawBoardSparse(snap.defaultColor, snap.pixels); }
+function connectWS(){ if(!me) return; ws=new WebSocket((location.protocol==='https:'?'wss':'ws')+'://'+location.host+'/ws'); ws.onopen=()=>{ pingStart=performance.now(); ws.send(JSON.stringify({type:'ping'})); }; ws.onmessage=e=>{ const m=JSON.parse(e.data); if(m.type==='init'){ if(m.user){ me=m.user; boughtColors=new Set(me.boughtColors); lastPlaceTs=me.lastPlaceTs; updateStatus(); buildLivePalette(); buildExtraColors(); enableUI(); } boardW=m.width; boardH=m.height; drawBoardSparse(m.defaultColor, m.pixels||[]); $('#totalPixelsHUD').textContent=m.totalPixels; updateRanking(m.ranking); const p=qs(); const x=p.get('x'), y=p.get('y'); if(x&&y) highlightCoord(+x,+y); } else if(m.type==='pixel'){ setPixel(m.x,m.y,m.color); $('#totalPixelsHUD').textContent=m.totalPixels; ws.send(JSON.stringify({type:'ping'})); } else if(m.type==='player_count'){ $('#playerCount').textContent=m.count; } else if(m.type==='ranking'){ updateRanking(m.ranking); } else if(m.type==='cooldown'){ cooldownOverrideRemaining=m.remaining; } else if(m.type==='me'){ if(m.user){ me=m.user; boughtColors=new Set(me.boughtColors); lastPlaceTs=me.lastPlaceTs; updateStatus(); buildLivePalette(); buildExtraColors(); }} else if(m.type==='pong'){ $('#latency').textContent=Math.round(performance.now()-pingStart); setTimeout(()=>{ pingStart=performance.now(); ws.send(JSON.stringify({type:'ping'})); },5000); } }; ws.onclose=()=>setTimeout(connectWS,3000); }
 function updateRanking(list){ const el=$('#rankingList'); el.innerHTML=''; list.forEach(r=>{ const li=document.createElement('li'); li.textContent=r.username+': '+r.pixels_placed; el.appendChild(li); }); }
 board.addEventListener('mousemove', e=>{ const rect=board.getBoundingClientRect(); const relX=e.clientX-rect.left, relY=e.clientY-rect.top; const x=Math.floor(offsetX + relX/viewScale); const y=Math.floor(offsetY + relY/viewScale); $('#boardCoords').textContent=`(${x},${y}) ${selectedColor||''}`; });
 board.addEventListener('mousedown', e=>{ if(e.button===0){ isPanning=true; panStart={x:e.clientX,y:e.clientY,ox:offsetX,oy:offsetY,moved:false}; } else if(e.button===1||e.button===2){ isPanning=true; panStart={x:e.clientX,y:e.clientY,ox:offsetX,oy:offsetY,moved:false}; e.preventDefault(); }});

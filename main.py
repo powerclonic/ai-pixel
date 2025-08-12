@@ -441,23 +441,17 @@ load_board_into_memory()
 
 @app.get("/api/board")
 async def get_board_snapshot():
-	# Retorna board comprimido (run-length simples por linhas)
-	def rle_line(line: List[str]):
-		out = []
-		prev = line[0]
-		count = 1
-		for c in line[1:]:
-			if c == prev:
-				count += 1
-			else:
-				out.append([prev, count])
-				prev = c
-				count = 1
-		out.append([prev, count])
-		return out
-
-	compressed = [rle_line(row) for row in board_mem]
-	return {"rle": compressed}
+	"""Return only changed pixels relative to default color for faster client init."""
+	conn = get_db()
+	cur = conn.execute("SELECT x,y,color FROM board")
+	pixels = [[row["x"], row["y"], row["color"]] for row in cur.fetchall()]
+	conn.close()
+	return {
+		"width": CONFIG["BOARD_WIDTH"],
+		"height": CONFIG["BOARD_HEIGHT"],
+		"defaultColor": BOARD_DEFAULT_COLOR,
+		"pixels": pixels,
+	}
 
 
 # ===================== UPGRADES ===================== #
@@ -612,11 +606,17 @@ async def ws_endpoint(ws: WebSocket):
 	ranking = [dict(row) for row in cur.fetchall()]
 	conn.close()
 	user_row_initial = regen_and_fetch(user_id)
+	# Only send changed pixels (sparse) to avoid huge payload / client lag
+	conn_pixels = get_db()
+	curp = conn_pixels.execute("SELECT x,y,color FROM board")
+	changed = [[r["x"], r["y"], r["color"]] for r in curp.fetchall()]
+	conn_pixels.close()
 	await ws.send_json({
 		"type": "init",
 		"width": CONFIG["BOARD_WIDTH"],
 		"height": CONFIG["BOARD_HEIGHT"],
-		"boardRows": board_mem,  # simples: lista de listas
+		"defaultColor": BOARD_DEFAULT_COLOR,
+		"pixels": changed,
 		"totalPixels": total_pixels,
 		"ranking": ranking,
 		"user": serialize_user(user_row_initial) if user_row_initial else None,
