@@ -42,6 +42,7 @@ from fastapi import (
 	WebSocket,
 	WebSocketDisconnect,
 )
+from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
@@ -312,6 +313,11 @@ app.add_middleware(
 	allow_methods=["*"],
 	allow_headers=["*"],
 )
+
+# Serve static assets (background image, etc.)
+static_dir = Path(__file__).parent / "static"
+if static_dir.exists():
+	app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
 
 @app.get("/")
