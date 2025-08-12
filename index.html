@@ -1,8 +1,8 @@
 <!DOCTYPE html>
-<html lang="pt-BR">
+<html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>Pixel Place Game</title>
+  <title>AI generic trash coded pixel game</title>
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <link rel="stylesheet" href="https://unpkg.com/@picocss/pico@2.0.6/css/pico.min.css" />
   <style>
@@ -10,47 +10,59 @@
     html,body { height:100%; margin:0; background:#111; color:#eee; overflow:hidden; font-family:system-ui, sans-serif; }
     #canvasContainer { position:fixed; inset:0; display:flex; align-items:center; justify-content:center; }
     #board { image-rendering: pixelated; cursor:crosshair; background:#222; box-shadow:0 0 0 1px #333; }
-    #fabBar { position:fixed; top:.75rem; left:.75rem; display:flex; gap:.5rem; flex-wrap:wrap; z-index:50; }
+    #fabBar { position:fixed; top:.75rem; left:.75rem; display:flex; gap:.5rem; flex-wrap:wrap; z-index:60; }
     #fabBar button { font-size:.7rem; padding:.45rem .7rem; }
-    #hud { position:fixed; bottom:.6rem; left:.6rem; background:var(--hud-bg); backdrop-filter:blur(5px); padding:.55rem .8rem; border-radius:.6rem; font-size:.7rem; line-height:1.25; z-index:40; }
-    #cooldownBar,#storedPixelsBar { height:6px; background:#333; margin-top:4px; position:relative; border-radius:3px; overflow:hidden; }
-    #cooldownFill { position:absolute; top:0; left:0; bottom:0; width:0%; background:#ff9800; }
-    #storedPixelsFill { position:absolute; top:0; left:0; bottom:0; width:0%; background:#4caf50; }
-    #boardCoords { position:fixed; top:.6rem; right:.8rem; background:var(--hud-bg); padding:.35rem .7rem; border-radius:.5rem; font-size:.7rem; z-index:40; }
-    dialog { max-width:520px; }
-    #palette button,#extraColors button { width:26px; height:26px; padding:0; border:1px solid #000; }
-    #extraColors, #palette { display:flex; flex-wrap:wrap; gap:4px; }
+    #hud { position:fixed; bottom:.6rem; left:.6rem; background:var(--hud-bg); backdrop-filter:blur(5px); padding:.55rem .8rem .65rem; border-radius:.6rem; font-size:.7rem; line-height:1.25; z-index:50; width:250px; }
+    .bar { height:7px; background:#333; margin-top:4px; position:relative; border-radius:4px; overflow:hidden; }
+    .fill { position:absolute; inset:0; width:0%; background:linear-gradient(90deg,#ff9800,#ffa733); transition:width .12s linear; }
+    #regenFill { background:linear-gradient(90deg,#2e7d32,#43a047); }
+    #boardCoords { position:fixed; top:.6rem; right:.8rem; background:var(--hud-bg); padding:.35rem .7rem; border-radius:.5rem; font-size:.7rem; z-index:50; }
+    #palettePanel { position:fixed; bottom:.6rem; left:calc(.6rem + 260px); background:var(--hud-bg); backdrop-filter:blur(5px); padding:.45rem .55rem .55rem; border-radius:.6rem; display:flex; flex-direction:column; gap:.35rem; max-width:50vw; z-index:50; }
+    #livePalette { display:flex; flex-wrap:wrap; gap:4px; max-width:420px; }
+    #livePalette button { width:24px; height:24px; padding:0; border:1px solid #000; cursor:pointer; position:relative; }
+    #livePalette button.selected { outline:2px solid #fff; }
+    #livePalette button.extra:not(.owned){ outline:2px dashed #888; }
+    #livePalette button.extra.owned { box-shadow:0 0 0 2px rgba(255,215,0,0.35); }
     #rankingList { max-height:320px; overflow:auto; font-size:.85rem; }
+    dialog { max-width:520px; }
     .outline { outline:2px dashed #666; }
     .dialog-footer { display:flex; gap:.5rem; flex-wrap:wrap; }
+    #cooldownMode { font-size:.65rem; opacity:.8; }
   </style>
 </head>
 <body>
   <div id="canvasContainer"><canvas id="board" width="256" height="144"></canvas></div>
   <div id="fabBar">
     <button id="btnAuth" class="secondary"></button>
-    <button id="openPalette">Paleta</button>
-    <button id="openRanking">Ranking</button>
-    <button id="openInfo">Info</button>
+  <button id="openRanking">Ranking</button>
+  <button id="openInfo">Info</button>
   </div>
   <div id="boardCoords"></div>
   <div id="hud">
-    <div><strong>Players:</strong> <span id="playerCount">0</span> | <strong>Pixels:</strong> <span id="totalPixelsHUD">0</span></div>
-    <div>Cooldown: <span id="cooldownText">pronto</span> | Stash: <span id="storedPixels">0</span>/<span id="capacity">0</span> | Créditos: <span id="credits">0</span> | Ping: <span id="latency">-</span>ms</div>
-    <div id="cooldownBar"><div id="cooldownFill"></div></div>
-    <div id="storedPixelsBar"><div id="storedPixelsFill"></div></div>
+  <div><strong>Players:</strong> <span id="playerCount">0</span> | <strong>Pixels:</strong> <span id="totalPixelsHUD">0</span></div>
+  <div><span id="cooldownMode">-</span> <span id="cooldownText"></span></div>
+  <div>Stash: <span id="storedPixels">0</span>/<span id="capacity">0</span> | Credits: <span id="credits">0</span> | Ping: <span id="latency">-</span>ms</div>
+    <div class="bar"><div id="cooldownFill" class="fill"></div></div>
+    <div class="bar"><div id="regenFill" class="fill"></div></div>
+  </div>
+  <div id="palettePanel">
+    <div style="display:flex; align-items:center; gap:.5rem; flex-wrap:wrap;">
+  <strong style="font-size:.7rem">Palette</strong>
+  <button id="btnUpgrades" class="secondary" style="font-size:.55rem; padding:.3rem .55rem;">Upgrades</button>
+    </div>
+    <div id="livePalette"></div>
   </div>
 
   <!-- Dialogs -->
-  <dialog id="authDialog"><article><h3>Entrar / Registrar</h3><form id="authForm"><input name="username" placeholder="Usuário" minlength="3" maxlength="20" required /><input name="password" placeholder="Senha" type="password" minlength="4" required /><footer class="dialog-footer"><button value="register">Registrar</button><button value="login">Login</button><button type="button" class="secondary" onclick="authDialog.close()">Fechar</button></footer></form></article></dialog>
-  <dialog id="paletteDialog"><article><header><h3>Paleta & Upgrades</h3></header><section><h6>Paleta Base</h6><div id="palette"></div><h6 style="margin-top:.75rem">Cores Extras</h6><div id="extraColors"></div><button id="buyColorBtn" class="secondary" disabled style="margin-top:.5rem">Comprar cor selecionada (<span id="colorCost"></span>)</button><hr /><button id="upgradeCapacityBtn" class="contrast" disabled>Upgrade Capacidade (<span id="capacityUpgradeCost"></span>)</button></section><footer class="dialog-footer"><button onclick="paletteDialog.close()" class="secondary">Fechar</button></footer></article></dialog>
-  <dialog id="rankingDialog"><article><header><h3>Ranking</h3></header><ol id="rankingList"></ol><footer class="dialog-footer"><button onclick="rankingDialog.close()" class="secondary">Fechar</button></footer></article></dialog>
-  <dialog id="infoDialog"><article><header><h3>Info</h3></header><p>r/place simplificado. 1 crédito por pixel. Use créditos para cores e capacidade.</p><p>Compartilhe coordenadas: URL ?x=..&y=..</p><ul style="font-size:.75rem; opacity:.8"><li>[P] Paleta</li><li>[R] Ranking</li><li>[I] Info</li><li>[ESC] Fecha</li></ul><footer class="dialog-footer"><button onclick="infoDialog.close()" class="secondary">Fechar</button></footer></article></dialog>
+  <dialog id="authDialog"><article><h3>Sign in / Register</h3><form id="authForm"><input name="username" placeholder="Username" minlength="3" maxlength="20" required /><input name="password" placeholder="Password" type="password" minlength="4" required /><footer class="dialog-footer"><button value="register">Register</button><button value="login">Login</button><button type="button" class="secondary" onclick="authDialog.close()">Close</button></footer></form></article></dialog>
+  <dialog id="paletteDialog"><article><header><h3>Upgrades / Extra Colors</h3></header><section><p style="font-size:.75rem">Select a color in the floating palette. Use credits to buy extra colors or increase capacity.</p><h6>Extra Colors</h6><div id="extraColors"></div><button id="buyColorBtn" class="secondary" disabled style="margin-top:.5rem">Buy selected color (<span id="colorCost"></span>)</button><hr /><h6>Capacity</h6><p style="font-size:.7rem">Stored pixels capacity: <span id="capacity"></span></p><button id="upgradeCapacityBtn" class="contrast" disabled>Upgrade Capacity (<span id="capacityUpgradeCost"></span>)</button></section><footer class="dialog-footer"><button onclick="paletteDialog.close()" class="secondary">Close</button></footer></article></dialog>
+  <dialog id="rankingDialog"><article><header><h3>Ranking</h3></header><ol id="rankingList"></ol><footer class="dialog-footer"><button onclick="rankingDialog.close()" class="secondary">Close</button></footer></article></dialog>
+  <dialog id="infoDialog"><article><header><h3>Info</h3></header><p>Simplified collaborative pixel board. Earn 1 credit per placed pixel. Spend credits on extra colors and capacity.</p><p>Share coordinates: URL ?x=..&y=..</p><ul style="font-size:.75rem; opacity:.8"><li>[P] Palette dialog</li><li>[R] Ranking</li><li>[I] Info</li><li>[ESC] Close dialogs</li></ul><footer class="dialog-footer"><button onclick="infoDialog.close()" class="secondary">Close</button></footer></article></dialog>
 
 <script>
 const $ = s=>document.querySelector(s);
 const board=$('#board'); const ctx=board.getContext('2d');
-let config, me, ws, selectedColor=null, lastCooldownEnd=0, baseCooldown=5, boardW=256, boardH=144, allowedColors=[], extraColors=[], boughtColors=new Set(), pingStart=0, regenInterval=5;
+let config, me, ws, selectedColor=null, baseCooldown=5, boardW=256, boardH=144, allowedColors=[], extraColors=[], boughtColors=new Set(), pingStart=0, regenInterval=5, lastPlaceTs=null, cooldownOverrideRemaining=null;
 let viewScale=4, minScale=1, maxScale=40, offsetX=0, offsetY=0; let isPanning=false; let panStart={x:0,y:0,ox:0,oy:0,moved:false};
 const offscreen=document.createElement('canvas'); const offctx=offscreen.getContext('2d');
 function qs(){ return new URLSearchParams(location.search); }
@@ -63,57 +75,50 @@ function drawBoardRows(rows){ offscreen.width=boardW; offscreen.height=boardH; f
 function setPixel(x,y,color){ offctx.fillStyle=color; offctx.fillRect(x,y,1,1); redraw(); }
 function resizeCanvas(){ board.width=window.innerWidth; board.height=window.innerHeight; updateMinScale(); constrainView(); redraw(); }
 window.addEventListener('resize', resizeCanvas);
-function buildPalette(){ const pal=$('#palette'); pal.innerHTML=''; allowedColors.forEach(c=>{ const b=document.createElement('button'); b.style.background=c; b.title=c; b.onclick=()=>{selectedColor=c; highlightPalette();}; pal.appendChild(b);}); highlightPalette(); }
-function buildExtraColors(){ const ec=$('#extraColors'); ec.innerHTML=''; extraColors.forEach(c=>{ const b=document.createElement('button'); b.style.background=c; b.title=c; if(!boughtColors.has(c)) b.classList.add('outline'); b.onclick=()=>{selectedColor=c; highlightPalette(); updateBuyColorBtn();}; ec.appendChild(b); }); }
-function highlightPalette(){ [...document.querySelectorAll('#palette button,#extraColors button')].forEach(btn=>{ btn.style.outline=(btn.style.background.toUpperCase()===(selectedColor||'').toUpperCase())?'2px solid #fff':'none'; }); }
+function buildLivePalette(){ const cont=$('#livePalette'); cont.innerHTML=''; const full=allowedColors.concat([...boughtColors]); full.forEach(c=>{ const btn=document.createElement('button'); btn.style.background=c; if(extraColors.includes(c)) { btn.classList.add('extra'); if(boughtColors.has(c)) btn.classList.add('owned'); } btn.onclick=()=>{ selectedColor=c; updatePaletteSelection(); updateBuyColorBtn(); }; if(c===selectedColor) btn.classList.add('selected'); cont.appendChild(btn); }); updatePaletteSelection(); }
+function buildExtraColors(){ const ec=$('#extraColors'); ec.innerHTML=''; extraColors.forEach(c=>{ const b=document.createElement('button'); b.style.background=c; b.title=c; if(!boughtColors.has(c)) b.classList.add('outline'); b.onclick=()=>{ selectedColor=c; updatePaletteSelection(); updateBuyColorBtn(); }; ec.appendChild(b); }); }
+function updatePaletteSelection(){ [...document.querySelectorAll('#livePalette button')].forEach(b=>{ const col=b.style.background.toUpperCase(); if(selectedColor && col===selectedColor.toUpperCase()) b.classList.add('selected'); else b.classList.remove('selected'); }); }
 function updateStatus(){ if(!me) return; $('#storedPixels').textContent=me.storedPixels; $('#capacity').textContent=me.capacity; $('#credits').textContent=me.credits; }
-function animateStash(){ if(!me){ requestAnimationFrame(animateStash); return; } const now=Date.now()/1000; const cap=me.capacity||1; let stored=me.storedPixels||0; let pct=stored/cap; if(stored<cap && me.lastRegenTs){ const since= now - me.lastRegenTs; if(since<regenInterval){ pct=(stored + since/regenInterval)/cap; } } $('#storedPixelsFill').style.width=Math.min(100,pct*100)+'%'; requestAnimationFrame(animateStash); }
-function updateCooldownUI(){ const rem=Math.max(0,lastCooldownEnd-Date.now()/1000); if(rem>0){ $('#cooldownText').textContent=rem.toFixed(1)+'s'; $('#cooldownFill').style.width=(1-rem/baseCooldown)*100+'%'; } else { $('#cooldownText').textContent='pronto'; $('#cooldownFill').style.width='100%'; } }
-setInterval(updateCooldownUI,50);
+function frameLoop(){ const now=Date.now()/1000; if(me){ // Regen bar
+    const cap=me.capacity||1; const stored=me.storedPixels||0; let regenPct=stored/cap; if(stored<cap && me.lastRegenTs){ const since= now - me.lastRegenTs; const frac=Math.min(1, since/regenInterval); regenPct = (stored + frac)/cap; } $('#regenFill').style.width=(Math.min(1, regenPct)*100)+'%';
+    // Cooldown logic (placement) only relevant se sem pixels armazenados
+    let remaining=0; if(me.storedPixels===0){ if(cooldownOverrideRemaining!=null){ remaining=cooldownOverrideRemaining; const estLast= now - (baseCooldown - cooldownOverrideRemaining); lastPlaceTs= lastPlaceTs||estLast; if(remaining<=0) cooldownOverrideRemaining=null; } else if(lastPlaceTs){ remaining = Math.max(0, baseCooldown - (now - lastPlaceTs)); }
+    }
+  if(me.storedPixels>0){ $('#cooldownMode').textContent='Regen'; $('#cooldownText').textContent = (me.storedPixels<me.capacity)? 'next '+ ( Math.max(0, regenInterval - (now - (me.lastRegenTs||now)) ).toFixed(1) +'s') : 'full'; $('#cooldownFill').style.width='100%'; }
+  else { $('#cooldownMode').textContent='Cooldown'; if(remaining>0){ $('#cooldownText').textContent=remaining.toFixed(1)+'s'; $('#cooldownFill').style.width=( (baseCooldown-remaining)/baseCooldown *100)+'%'; } else { $('#cooldownText').textContent='ready'; $('#cooldownFill').style.width='100%'; } }
+  }
+  requestAnimationFrame(frameLoop);
+}
 async function fetchJSON(u){ const r=await fetch(u); if(!r.ok) throw new Error(await r.text()); return r.json(); }
 async function postJSON(u,b){ const r=await fetch(u,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b||{})}); if(!r.ok) throw new Error(await r.text()); return r.json(); }
-async function loadConfig(){ config=await fetchJSON('/api/config'); $('#colorCost').textContent=config.colorCost; $('#capacityUpgradeCost').textContent=config.capacityUpgradeCost; boardW=config.width; boardH=config.height; allowedColors=config.basePalette.slice(); extraColors=config.extraColors.slice(); baseCooldown=config.baseCooldown; if(config.regenInterval) regenInterval=config.regenInterval; buildPalette(); buildExtraColors(); }
-async function loadMe(){ /* mantido para login/logout explícito */ try{ me=await fetchJSON('/api/me'); boughtColors=new Set(me.boughtColors); updateStatus(); buildExtraColors(); enableUI(); }catch{ me=null; disableUI(); } }
-function enableUI(){ $('#btnAuth').textContent= me? me.username+' (sair)':'Entrar'; $('#upgradeCapacityBtn').disabled=!me; }
-function disableUI(){ $('#btnAuth').textContent='Entrar'; }
+async function loadConfig(){ config=await fetchJSON('/api/config'); $('#colorCost').textContent=config.colorCost; $('#capacityUpgradeCost').textContent=config.capacityUpgradeCost; boardW=config.width; boardH=config.height; allowedColors=config.basePalette.slice(); extraColors=config.extraColors.slice(); baseCooldown=config.baseCooldown; if(config.regenInterval) regenInterval=config.regenInterval; buildLivePalette(); buildExtraColors(); }
+async function loadMe(){ try{ me=await fetchJSON('/api/me'); boughtColors=new Set(me.boughtColors); updateStatus(); buildExtraColors(); enableUI(); }catch{ me=null; disableUI(); } }
+function enableUI(){ $('#btnAuth').textContent= me? me.username+' (logout)':'Login'; $('#upgradeCapacityBtn').disabled=!me; }
+function disableUI(){ $('#btnAuth').textContent='Login'; }
 async function initBoard(){ const snap=await fetchJSON('/api/board'); const rows=[]; snap.rle.forEach(rle=>{ const line=[]; rle.forEach(([color,count])=>{ for(let i=0;i<count;i++) line.push(color);}); rows.push(line); }); drawBoardRows(rows); }
-function connectWS(){ if(!me) return; ws=new WebSocket((location.protocol==='https:'?'wss':'ws')+'://'+location.host+'/ws'); ws.onopen=()=>{ pingStart=performance.now(); ws.send(JSON.stringify({type:'ping'})); }; ws.onmessage=e=>{ const m=JSON.parse(e.data); if(m.type==='init'){ if(m.user){ me=m.user; boughtColors=new Set(me.boughtColors); updateStatus(); buildExtraColors(); enableUI(); } drawBoardRows(m.boardRows); $('#totalPixelsHUD').textContent=m.totalPixels; updateRanking(m.ranking); const p=qs(); const x=p.get('x'), y=p.get('y'); if(x&&y) highlightCoord(+x,+y); } else if(m.type==='pixel'){ setPixel(m.x,m.y,m.color); $('#totalPixelsHUD').textContent=m.totalPixels; ws.send(JSON.stringify({type:'ping'})); } else if(m.type==='player_count'){ $('#playerCount').textContent=m.count; } else if(m.type==='ranking'){ updateRanking(m.ranking); } else if(m.type==='cooldown'){ lastCooldownEnd=Date.now()/1000+m.remaining; } else if(m.type==='me'){ if(m.user){ me=m.user; boughtColors=new Set(me.boughtColors); updateStatus(); buildExtraColors(); }} else if(m.type==='pong'){ $('#latency').textContent=Math.round(performance.now()-pingStart); setTimeout(()=>{ pingStart=performance.now(); ws.send(JSON.stringify({type:'ping'})); },5000); } }; ws.onclose=()=>setTimeout(connectWS,3000); }
+function connectWS(){ if(!me) return; ws=new WebSocket((location.protocol==='https:'?'wss':'ws')+'://'+location.host+'/ws'); ws.onopen=()=>{ pingStart=performance.now(); ws.send(JSON.stringify({type:'ping'})); }; ws.onmessage=e=>{ const m=JSON.parse(e.data); if(m.type==='init'){ if(m.user){ me=m.user; boughtColors=new Set(me.boughtColors); lastPlaceTs=me.lastPlaceTs; updateStatus(); buildLivePalette(); buildExtraColors(); enableUI(); } drawBoardRows(m.boardRows); $('#totalPixelsHUD').textContent=m.totalPixels; updateRanking(m.ranking); const p=qs(); const x=p.get('x'), y=p.get('y'); if(x&&y) highlightCoord(+x,+y); } else if(m.type==='pixel'){ setPixel(m.x,m.y,m.color); $('#totalPixelsHUD').textContent=m.totalPixels; ws.send(JSON.stringify({type:'ping'})); } else if(m.type==='player_count'){ $('#playerCount').textContent=m.count; } else if(m.type==='ranking'){ updateRanking(m.ranking); } else if(m.type==='cooldown'){ cooldownOverrideRemaining=m.remaining; } else if(m.type==='me'){ if(m.user){ me=m.user; boughtColors=new Set(me.boughtColors); lastPlaceTs=me.lastPlaceTs; updateStatus(); buildLivePalette(); buildExtraColors(); }} else if(m.type==='pong'){ $('#latency').textContent=Math.round(performance.now()-pingStart); setTimeout(()=>{ pingStart=performance.now(); ws.send(JSON.stringify({type:'ping'})); },5000); } }; ws.onclose=()=>setTimeout(connectWS,3000); }
 function updateRanking(list){ const el=$('#rankingList'); el.innerHTML=''; list.forEach(r=>{ const li=document.createElement('li'); li.textContent=r.username+': '+r.pixels_placed; el.appendChild(li); }); }
 board.addEventListener('mousemove', e=>{ const rect=board.getBoundingClientRect(); const relX=e.clientX-rect.left, relY=e.clientY-rect.top; const x=Math.floor(offsetX + relX/viewScale); const y=Math.floor(offsetY + relY/viewScale); $('#boardCoords').textContent=`(${x},${y}) ${selectedColor||''}`; });
 board.addEventListener('mousedown', e=>{ if(e.button===0){ isPanning=true; panStart={x:e.clientX,y:e.clientY,ox:offsetX,oy:offsetY,moved:false}; } else if(e.button===1||e.button===2){ isPanning=true; panStart={x:e.clientX,y:e.clientY,ox:offsetX,oy:offsetY,moved:false}; e.preventDefault(); }});
 window.addEventListener('mousemove', e=>{ if(isPanning){ const dx=(e.clientX-panStart.x)/viewScale; const dy=(e.clientY-panStart.y)/viewScale; if(Math.abs(dx)>0.5||Math.abs(dy)>0.5) panStart.moved=true; offsetX=panStart.ox - dx; offsetY=panStart.oy - dy; constrainView(); redraw(); }});
 window.addEventListener('mouseup', ()=>{ isPanning=false; });
-board.addEventListener('click', e=>{ if(isPanning && panStart.moved) return; if(!me||!selectedColor) return; const rect=board.getBoundingClientRect(); const relX=e.clientX-rect.left, relY=e.clientY-rect.top; const x=Math.floor(offsetX + relX/viewScale); const y=Math.floor(offsetY + relY/viewScale); updateURLCoords(x,y); ws?.send(JSON.stringify({type:'place',x,y,color:selectedColor})); lastCooldownEnd=Date.now()/1000+baseCooldown; });
+function canPlace(){ if(!me||!selectedColor) return false; if(me.storedPixels>0) return true; const now=Date.now()/1000; if(lastPlaceTs==null) return true; return (now - lastPlaceTs) >= baseCooldown; }
+board.addEventListener('click', e=>{ if(isPanning && panStart.moved) return; if(!canPlace()) return; const rect=board.getBoundingClientRect(); const relX=e.clientX-rect.left, relY=e.clientY-rect.top; const x=Math.floor(offsetX + relX/viewScale); const y=Math.floor(offsetY + relY/viewScale); updateURLCoords(x,y); ws?.send(JSON.stringify({type:'place',x,y,color:selectedColor})); /* cooldown handled server-side; local optimistic updates not needed */ });
 board.addEventListener('wheel', e=>{ e.preventDefault(); const direction=Math.sign(e.deltaY); const old=viewScale; if(direction>0) viewScale=Math.max(minScale, viewScale/1.15); else viewScale=Math.min(maxScale, viewScale*1.15); const rect=board.getBoundingClientRect(); const cx=(e.clientX-rect.left)/old + offsetX; const cy=(e.clientY-rect.top)/old + offsetY; offsetX = cx - (e.clientX-rect.left)/viewScale; offsetY = cy - (e.clientY-rect.top)/viewScale; constrainView(); redraw(); }, {passive:false});
 window.addEventListener('contextmenu', e=>{ if(e.target===board) e.preventDefault(); });
 function highlightCoord(x,y){ ctx.save(); ctx.strokeStyle='rgba(255,255,255,0.85)'; ctx.lineWidth=0.5; ctx.strokeRect(x+0.05,y+0.05,0.9,0.9); ctx.restore(); }
 $('#btnAuth').addEventListener('click',async e=>{ e.preventDefault(); if(me){ await fetch('/api/logout',{method:'POST'}); me=null; disableUI(); location.reload(); return; } authDialog.showModal(); });
-$('#authForm').addEventListener('submit',async e=>{ e.preventDefault(); const fd=new FormData(e.target); const body={username:fd.get('username'),password:fd.get('password')}; const action=e.submitter.value; try{ await postJSON('/api/'+action, body); authDialog.close(); await loadMe(); connectWS(); }catch(err){ alert('Erro: '+err); } });
-$('#buyColorBtn').addEventListener('click',async ()=>{ if(!selectedColor) return; try{ await postJSON('/api/buy_color',{color:selectedColor}); await loadMe(); boughtColors=new Set(me.boughtColors); allowedColors=config.basePalette.concat([...boughtColors]); buildPalette(); buildExtraColors(); updateBuyColorBtn(); }catch(e){ alert('Erro: '+e); } });
-$('#upgradeCapacityBtn').addEventListener('click',async ()=>{ try{ await postJSON('/api/upgrade_capacity',{}); await loadMe(); }catch(e){ alert('Erro: '+e); } });
+$('#authForm').addEventListener('submit',async e=>{ e.preventDefault(); const fd=new FormData(e.target); const body={username:fd.get('username'),password:fd.get('password')}; const action=e.submitter.value; try{ await postJSON('/api/'+action, body); authDialog.close(); await loadMe(); connectWS(); }catch(err){ alert('Error: '+err); } });
+$('#buyColorBtn').addEventListener('click',async ()=>{ if(!selectedColor) return; try{ await postJSON('/api/buy_color',{color:selectedColor}); await loadMe(); boughtColors=new Set(me.boughtColors); allowedColors=config.basePalette.concat([...boughtColors]); buildPalette(); buildExtraColors(); updateBuyColorBtn(); }catch(e){ alert('Error: '+e); } });
+$('#upgradeCapacityBtn').addEventListener('click',async ()=>{ try{ await postJSON('/api/upgrade_capacity',{}); await loadMe(); }catch(e){ alert('Error: '+e); } });
 function updateBuyColorBtn(){ const btn=$('#buyColorBtn'); btn.disabled=!selectedColor || !extraColors.includes(selectedColor) || boughtColors.has(selectedColor) || !me; }
-$('#openPalette').onclick=()=>paletteDialog.showModal();
+$('#btnUpgrades').onclick=()=>paletteDialog.showModal();
 $('#openRanking').onclick=()=>rankingDialog.showModal();
 $('#openInfo').onclick=()=>infoDialog.showModal();
 function hotkeysEnabled(){ const ae=document.activeElement; const typing=ae && (ae.tagName==='INPUT'||ae.tagName==='TEXTAREA'||ae.isContentEditable); return !typing && !authDialog.open; }
 window.addEventListener('keydown', e=>{ if(!hotkeysEnabled()) return; if(e.key==='p'||e.key==='P'){ paletteDialog.open?paletteDialog.close():paletteDialog.showModal(); } else if(e.key==='r'||e.key==='R'){ rankingDialog.open?rankingDialog.close():rankingDialog.showModal(); } else if(e.key==='i'||e.key==='I'){ infoDialog.open?infoDialog.close():infoDialog.showModal(); } else if(e.key==='Escape'){ [paletteDialog,rankingDialog,infoDialog,authDialog].forEach(d=>d.open&&d.close()); } });
 // Removido polling REST para stash; agora via mensagens WS 'init' e 'me'
-async function init(){ await loadConfig(); await loadMe(); await initBoard(); resizeCanvas(); connectWS(); animateStash(); if(!me) authDialog.showModal(); }
-init();
-</script>
-</body>
- </body>
-</html>
-function updateBuyColorBtn(){
-  const btn = $('#buyColorBtn');
-  if(!selectedColor || !extraColors.includes(selectedColor) || boughtColors.has(selectedColor)){ btn.disabled=true; return; }
-  btn.disabled = me ? false : true;
-}
-
-async function init(){
-  await loadConfig(); await loadMe(); await initBoard(); connectWS();
-  if(!me) authDialog.showModal();
-}
+async function init(){ await loadConfig(); await loadMe(); await initBoard(); resizeCanvas(); connectWS(); frameLoop(); if(!me) authDialog.showModal(); }
 init();
 </script>
 </body>

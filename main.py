@@ -1,20 +1,20 @@
-"""Simple Online Pixel Placing Game (tipo r/place) - Backend único
+"""AI generic trash coded pixel game - single file backend
 
-Requisitos implementados:
- - FastAPI backend (um único arquivo)
- - Autenticação com token (JWT simplificado assinado HMAC) via cookie HttpOnly
- - WebSockets para: atualizações de pixels, ranking em tempo real, contagem de jogadores, pixels totais
- - Persistência com SQLite (usuários, board, upgrades, cores compradas)
- - Eficiência: board mantido em memória e sincronizado com SQLite; difusão somente de mudanças
- - Upgrades: armazenamento de pixels (pixels armazenados que podem ser gastos instantaneamente), compra de cores extras e aumento de capacidade
- - Cooldown configurável por pixel; geração passiva de pixels armazenados
- - Ranking em tempo real por pixels colocados
- - Coordenadas compartilháveis via query string (lado do front)
- - Parâmetros configuráveis via variáveis de ambiente
- - Simplicidade: tudo em um arquivo
+Implemented features:
+ - Single-file FastAPI backend
+ - Token auth (HMAC signed compact token) via HttpOnly cookie
+ - WebSockets: pixel updates, live ranking, player count, total pixels
+ - SQLite persistence (users, board, upgrades, purchased colors)
+ - Performance: board cached in memory and synced to SQLite; broadcast only diffs
+ - Upgrades: stored pixel capacity, extra color purchases, capacity upgrades
+ - Configurable per-pixel cooldown; passive stored pixel regeneration
+ - Live ranking by pixels placed
+ - Shareable coordinates via query string
+ - Configurable parameters via environment variables
+ - Simplicity: everything in one file
 
-Executar:
-  uvicorn main:app --reload --port 8000
+Run:
+	uvicorn main:app --reload --port 8000
 """
 
 from __future__ import annotations
@@ -50,17 +50,17 @@ from pydantic import BaseModel
 # ===================== CONFIG ===================== #
 
 CONFIG = {
-	"BOARD_WIDTH": int(os.getenv("BOARD_WIDTH", 256)),  # aumentado
-	"BOARD_HEIGHT": int(os.getenv("BOARD_HEIGHT", 144)),  # aumentado
-	"BASE_COOLDOWN_SEC": float(os.getenv("BASE_COOLDOWN_SEC", 5.0)),
-	"PIXEL_STORAGE_CAPACITY": int(os.getenv("PIXEL_STORAGE_CAPACITY", 10)),
-	"PIXEL_STORAGE_REGEN_SEC": float(os.getenv("PIXEL_STORAGE_REGEN_SEC", 5.0)),  # igual ao cooldown base
+	"BOARD_WIDTH": int(os.getenv("BOARD_WIDTH", 2048)),  # aumentado
+	"BOARD_HEIGHT": int(os.getenv("BOARD_HEIGHT", 2048)),  # aumentado
+	"BASE_COOLDOWN_SEC": float(os.getenv("BASE_COOLDOWN_SEC", 10.0)),
+	"PIXEL_STORAGE_CAPACITY": int(os.getenv("PIXEL_STORAGE_CAPACITY", 60)),
+	"PIXEL_STORAGE_REGEN_SEC": float(os.getenv("PIXEL_STORAGE_REGEN_SEC", 10.0)),  # igual ao cooldown base
 	"TOKEN_EXP_MIN": int(os.getenv("TOKEN_EXP_MIN", 24 * 60)),
 	"SECRET_KEY": os.getenv("SECRET_KEY", secrets.token_hex(32)),
 	"INITIAL_CREDITS": int(os.getenv("INITIAL_CREDITS", 100)),
 	"COLOR_COST": int(os.getenv("COLOR_COST", 50)),
-	"CAPACITY_UPGRADE_COST": int(os.getenv("CAPACITY_UPGRADE_COST", 200)),
-	"CAPACITY_UPGRADE_STEP": int(os.getenv("CAPACITY_UPGRADE_STEP", 10)),
+	"CAPACITY_UPGRADE_COST": int(os.getenv("CAPACITY_UPGRADE_COST", 50)),
+	"CAPACITY_UPGRADE_STEP": int(os.getenv("CAPACITY_UPGRADE_STEP", 25)),
 	"MAX_COLORS_PURCHASE": int(os.getenv("MAX_COLORS_PURCHASE", 64)),
 	"RANKING_TOP_N": int(os.getenv("RANKING_TOP_N", 10)),
 }
@@ -97,7 +97,9 @@ EXTRA_COLORS = [
 	"#8B4513",
 ]
 
-DB_PATH = Path(__file__).parent / "pixel_game.sqlite3"
+DB_PATH = Path(__file__).parent / "data" / "pixel_game.sqlite3"
+# Ensure directory exists for easier backups
+DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 
 # ===================== DB / MODELO ===================== #
 
@@ -164,6 +166,29 @@ def init_db():
 
 
 init_db()
+
+# Migration: ensure all existing users have at least the base configured pixel capacity.
+def ensure_min_capacity():
+	try:
+		conn = get_db()
+		base_cap = CONFIG["PIXEL_STORAGE_CAPACITY"]
+		# Update users whose capacity is below new base; also top up stored_pixels proportionally if they were full before.
+		# We simply set stored_pixels to the new cap if stored_pixels >= pixel_capacity (i.e., they were at or above old full state)
+		conn.execute(
+			"""
+			UPDATE users
+			SET pixel_capacity = ?,
+				stored_pixels = CASE WHEN stored_pixels >= pixel_capacity THEN ? ELSE stored_pixels END
+			WHERE pixel_capacity < ?
+			""",
+			(base_cap, base_cap, base_cap),
+		)
+		conn.commit()
+		conn.close()
+	except Exception:
+		pass  # silent; non-critical
+
+ensure_min_capacity()
 
 # ===================== AUTH ===================== #
 
@@ -241,16 +266,16 @@ async def get_current_user(request: Request, token: Optional[str] = Cookie(None)
 		if auth and auth.startswith("Bearer "):
 			raw = auth.split(None, 1)[1]
 	if not raw:
-		raise HTTPException(status_code=401, detail="Não autenticado")
+		raise HTTPException(status_code=401, detail="Not authenticated")
 	payload = verify_token(raw)
 	if not payload:
-		raise HTTPException(status_code=401, detail="Token inválido")
+		raise HTTPException(status_code=401, detail="Invalid token")
 	conn = get_db()
 	cur = conn.execute("SELECT * FROM users WHERE id=?", (payload["sub"],))
 	user = cur.fetchone()
 	if not user:
 		conn.close()
-		raise HTTPException(status_code=401, detail="Usuário não encontrado")
+		raise HTTPException(status_code=401, detail="User not found")
 	# Regenerar armazenados
 	stored, last_regen = regen_stored_pixels(user)
 	if stored != user["stored_pixels"]:
@@ -267,7 +292,7 @@ async def get_current_user(request: Request, token: Optional[str] = Cookie(None)
 
 # ===================== APP ===================== #
 
-app = FastAPI(title="Pixel Placing Game")
+app = FastAPI(title="AI generic trash coded pixel game")
 app.add_middleware(GZipMiddleware, minimum_size=500)
 app.add_middleware(
 	CORSMiddleware,
@@ -282,7 +307,7 @@ app.add_middleware(
 async def root():
 	index_path = Path(__file__).parent / "index.html"
 	if not index_path.exists():
-		return PlainTextResponse("index.html não encontrado", status_code=404)
+		return PlainTextResponse("index.html not found", status_code=404)
 	return FileResponse(index_path)
 
 
@@ -294,13 +319,13 @@ class AuthPayload(BaseModel):
 @app.post("/api/register")
 async def register(data: AuthPayload, response: Response):
 	if not (3 <= len(data.username) <= 20):
-		raise HTTPException(400, "Username inválido")
+		raise HTTPException(400, "Invalid username length")
 	if len(data.password) < 4:
-		raise HTTPException(400, "Senha curta")
+		raise HTTPException(400, "Password too short")
 	conn = get_db()
 	if get_user_by_username(conn, data.username):
 		conn.close()
-		raise HTTPException(400, "Já existe")
+		raise HTTPException(400, "Username already exists")
 	pwd_hash, salt = hash_password(data.password)
 	now = time.time()
 	cur = conn.execute(
@@ -337,11 +362,11 @@ async def login(data: AuthPayload, response: Response):
 	user = get_user_by_username(conn, data.username)
 	if not user:
 		conn.close()
-		raise HTTPException(400, "Credenciais inválidas")
+		raise HTTPException(400, "Invalid credentials")
 	pwd_hash, _ = hash_password(data.password, user["salt"])
 	if not hmac.compare_digest(pwd_hash, user["password_hash"]):
 		conn.close()
-		raise HTTPException(400, "Credenciais inválidas")
+		raise HTTPException(400, "Invalid credentials")
 	token = issue_token(user["id"], user["username"])
 	conn.close()
 	response.set_cookie(
@@ -370,6 +395,7 @@ def serialize_user(user: sqlite3.Row) -> dict:
 		"credits": user["credits"],
 	"boughtColors": json.loads(user["bought_colors"] or "[]"),
 	"lastRegenTs": user["last_regen_ts"],
+	"lastPlaceTs": user["last_place_ts"],
 	}
 
 
@@ -445,12 +471,12 @@ class BuyColorPayload(BaseModel):
 async def buy_color(data: BuyColorPayload, user=Depends(get_current_user)):
 	color = data.color.upper()
 	if color not in EXTRA_COLORS:
-		raise HTTPException(400, "Cor não disponível")
+		raise HTTPException(400, "Color not available")
 	bought = set(json.loads(user["bought_colors"]))
 	if color in bought:
-		raise HTTPException(400, "Já possui")
+		raise HTTPException(400, "Color already owned")
 	if user["credits"] < CONFIG["COLOR_COST"]:
-		raise HTTPException(400, "Créditos insuficientes")
+		raise HTTPException(400, "Not enough credits")
 	bought.add(color)
 	conn = get_db()
 	conn.execute(
@@ -467,7 +493,7 @@ async def buy_color(data: BuyColorPayload, user=Depends(get_current_user)):
 @app.post("/api/upgrade_capacity")
 async def upgrade_capacity(user=Depends(get_current_user)):
 	if user["credits"] < CONFIG["CAPACITY_UPGRADE_COST"]:
-		raise HTTPException(400, "Créditos insuficientes")
+		raise HTTPException(400, "Not enough credits")
 	conn = get_db()
 	conn.execute(
 		"UPDATE users SET credits=credits-?, pixel_capacity=pixel_capacity+? WHERE id=?",
@@ -604,7 +630,7 @@ async def ws_endpoint(ws: WebSocket):
 				y = int(data.get("y", -1))
 				color = str(data.get("color", "")).upper()
 				if not (0 <= x < CONFIG["BOARD_WIDTH"] and 0 <= y < CONFIG["BOARD_HEIGHT"]):
-					await ws.send_json({"type": "error", "error": "Coord fora"})
+					await ws.send_json({"type": "error", "error": "Out of bounds"})
 					continue
 				allowed_colors = set(BASE_PALETTE)
 				# Carregar usuário para verificar colors
@@ -625,7 +651,7 @@ async def ws_endpoint(ws: WebSocket):
 				allowed_colors.update(bought)
 				if color not in allowed_colors:
 					conn.close()
-					await ws.send_json({"type": "error", "error": "Cor não permitida"})
+					await ws.send_json({"type": "error", "error": "Color not allowed"})
 					continue
 				now = time.time()
 				can_place = False
@@ -649,10 +675,17 @@ async def ws_endpoint(ws: WebSocket):
 					(x, y, color),
 				)
 				total_pixels = incr_total_pixels(conn)
-				conn.execute(
-					"UPDATE users SET last_place_ts=?, stored_pixels=?, pixels_placed=pixels_placed+1, credits=credits+1 WHERE id=?",
-					(now, new_stored, user_id),
-				)
+				# Se consumiu pixel armazenado, não reinicia cooldown (não atualiza last_place_ts)
+				if user["stored_pixels"] > 0:  # estava >0 antes de colocar => usou stored
+					conn.execute(
+						"UPDATE users SET stored_pixels=?, pixels_placed=pixels_placed+1, credits=credits+1 WHERE id=?",
+						(new_stored, user_id),
+					)
+				else:
+					conn.execute(
+						"UPDATE users SET last_place_ts=?, stored_pixels=?, pixels_placed=pixels_placed+1, credits=credits+1 WHERE id=?",
+						(now, new_stored, user_id),
+					)
 				conn.commit()
 				conn.close()
 				await manager.broadcast({
