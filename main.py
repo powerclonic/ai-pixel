@@ -150,6 +150,17 @@ def init_db():
 	)
 	conn.commit()
 
+	# Migrations: add metadata columns if they don't exist
+	try:
+		cur.execute("ALTER TABLE board ADD COLUMN placed_by INTEGER")
+	except Exception:
+		pass
+	try:
+		cur.execute("ALTER TABLE board ADD COLUMN placed_at REAL")
+	except Exception:
+		pass
+	conn.commit()
+
 	# Preenche board se vazio
 	cur.execute("SELECT COUNT(*) AS c FROM board")
 	if cur.fetchone()["c"] == 0:
@@ -441,10 +452,24 @@ load_board_into_memory()
 
 @app.get("/api/board")
 async def get_board_snapshot():
-	"""Return only changed pixels relative to default color for faster client init."""
+	"""Return only changed pixels with optional metadata (username, timestamp)."""
 	conn = get_db()
-	cur = conn.execute("SELECT x,y,color FROM board")
-	pixels = [[row["x"], row["y"], row["color"]] for row in cur.fetchall()]
+	cur = conn.execute(
+		"""
+		SELECT b.x,b.y,b.color,b.placed_at,u.username
+		FROM board b
+		LEFT JOIN users u ON u.id = b.placed_by
+		"""
+	)
+	pixels = []
+	for row in cur.fetchall():
+		pixels.append([
+			row["x"],
+			row["y"],
+			row["color"],
+			row["username"],
+			row["placed_at"],
+		])
 	conn.close()
 	return {
 		"width": CONFIG["BOARD_WIDTH"],
@@ -608,8 +633,13 @@ async def ws_endpoint(ws: WebSocket):
 	user_row_initial = regen_and_fetch(user_id)
 	# Only send changed pixels (sparse) to avoid huge payload / client lag
 	conn_pixels = get_db()
-	curp = conn_pixels.execute("SELECT x,y,color FROM board")
-	changed = [[r["x"], r["y"], r["color"]] for r in curp.fetchall()]
+	curp = conn_pixels.execute(
+		"""
+		SELECT b.x,b.y,b.color,b.placed_at,u.username
+		FROM board b LEFT JOIN users u ON u.id=b.placed_by
+		"""
+	)
+	changed = [[r["x"], r["y"], r["color"], r["username"], r["placed_at"]] for r in curp.fetchall()]
 	conn_pixels.close()
 	await ws.send_json({
 		"type": "init",
@@ -671,8 +701,11 @@ async def ws_endpoint(ws: WebSocket):
 				# Atualiza board
 				board_mem[y][x] = color
 				conn.execute(
-					"INSERT INTO board(x,y,color) VALUES(?,?,?) ON CONFLICT(x,y) DO UPDATE SET color=excluded.color",
-					(x, y, color),
+					"""
+					INSERT INTO board(x,y,color,placed_by,placed_at) VALUES(?,?,?,?,?)
+					ON CONFLICT(x,y) DO UPDATE SET color=excluded.color, placed_by=excluded.placed_by, placed_at=excluded.placed_at
+					""",
+					(x, y, color, user_id, now),
 				)
 				total_pixels = incr_total_pixels(conn)
 				# Se consumiu pixel armazenado, não reinicia cooldown (não atualiza last_place_ts)
@@ -694,6 +727,8 @@ async def ws_endpoint(ws: WebSocket):
 					"y": y,
 					"color": color,
 					"userId": user_id,
+					"username": payload.get("username"),
+					"placedAt": now,
 					"totalPixels": total_pixels,
 				})
 				await send_ranking()

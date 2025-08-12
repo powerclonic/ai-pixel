@@ -65,6 +65,7 @@ const board=$('#board'); const ctx=board.getContext('2d');
 let config, me, ws, selectedColor=null, baseCooldown=5, boardW=256, boardH=144, allowedColors=[], extraColors=[], boughtColors=new Set(), pingStart=0, regenInterval=5, lastPlaceTs=null, cooldownOverrideRemaining=null;
 let viewScale=4, minScale=1, maxScale=40, offsetX=0, offsetY=0; let isPanning=false; let panStart={x:0,y:0,ox:0,oy:0,moved:false};
 const offscreen=document.createElement('canvas'); const offctx=offscreen.getContext('2d');
+let pixelMeta=new Map(); // key "x,y" -> {u,t}
 function qs(){ return new URLSearchParams(location.search); }
 function updateURLCoords(x,y){ const p=qs(); p.set('x',x); p.set('y',y); history.replaceState(null,'','?'+p.toString()); }
 function updateMinScale(){ minScale = Math.min(window.innerWidth/boardW, window.innerHeight/boardH); if(viewScale<minScale){ viewScale=minScale; centerBoard(); }}
@@ -76,19 +77,20 @@ function drawBoardSparse(defaultColor, pixels){
   // Fill once with default color
   offctx.fillStyle=defaultColor; offctx.fillRect(0,0,boardW,boardH);
   // Draw changed pixels in chunks to avoid blocking
-  const batchSize=15000; let i=0;
+  pixelMeta.clear();
+  const batchSize=12000; let i=0;
   function drawBatch(){
     const end=Math.min(i+batchSize, pixels.length);
     for(;i<end;i++){
-      const [x,y,color]=pixels[i];
-      offctx.fillStyle=color;
-      offctx.fillRect(x,y,1,1);
+      const [x,y,color,u,ts]=pixels[i];
+      offctx.fillStyle=color; offctx.fillRect(x,y,1,1);
+      if(u||ts) pixelMeta.set(x+','+y,{u,t:ts});
     }
     if(i<pixels.length) requestAnimationFrame(drawBatch); else { resizeCanvas(); }
   }
   drawBatch();
 }
-function setPixel(x,y,color){ offctx.fillStyle=color; offctx.fillRect(x,y,1,1); redraw(); }
+function setPixel(x,y,color,u,ts){ offctx.fillStyle=color; offctx.fillRect(x,y,1,1); if(u||ts) pixelMeta.set(x+','+y,{u,t:ts}); redraw(); }
 function resizeCanvas(){ board.width=window.innerWidth; board.height=window.innerHeight; updateMinScale(); constrainView(); redraw(); }
 window.addEventListener('resize', resizeCanvas);
 function buildLivePalette(){ const cont=$('#livePalette'); cont.innerHTML=''; const full=allowedColors.concat([...boughtColors]); full.forEach(c=>{ const btn=document.createElement('button'); btn.style.background=c; if(extraColors.includes(c)) { btn.classList.add('extra'); if(boughtColors.has(c)) btn.classList.add('owned'); } btn.onclick=()=>{ selectedColor=c; updatePaletteSelection(); updateBuyColorBtn(); }; if(c===selectedColor) btn.classList.add('selected'); cont.appendChild(btn); }); updatePaletteSelection(); }
@@ -112,9 +114,12 @@ async function loadMe(){ try{ me=await fetchJSON('/api/me'); boughtColors=new Se
 function enableUI(){ $('#btnAuth').textContent= me? me.username+' (logout)':'Login'; $('#upgradeCapacityBtn').disabled=!me; }
 function disableUI(){ $('#btnAuth').textContent='Login'; }
 async function initBoard(){ const snap=await fetchJSON('/api/board'); boardW=snap.width; boardH=snap.height; drawBoardSparse(snap.defaultColor, snap.pixels); }
-function connectWS(){ if(!me) return; ws=new WebSocket((location.protocol==='https:'?'wss':'ws')+'://'+location.host+'/ws'); ws.onopen=()=>{ pingStart=performance.now(); ws.send(JSON.stringify({type:'ping'})); }; ws.onmessage=e=>{ const m=JSON.parse(e.data); if(m.type==='init'){ if(m.user){ me=m.user; boughtColors=new Set(me.boughtColors); lastPlaceTs=me.lastPlaceTs; updateStatus(); buildLivePalette(); buildExtraColors(); enableUI(); } boardW=m.width; boardH=m.height; drawBoardSparse(m.defaultColor, m.pixels||[]); $('#totalPixelsHUD').textContent=m.totalPixels; updateRanking(m.ranking); const p=qs(); const x=p.get('x'), y=p.get('y'); if(x&&y) highlightCoord(+x,+y); } else if(m.type==='pixel'){ setPixel(m.x,m.y,m.color); $('#totalPixelsHUD').textContent=m.totalPixels; ws.send(JSON.stringify({type:'ping'})); } else if(m.type==='player_count'){ $('#playerCount').textContent=m.count; } else if(m.type==='ranking'){ updateRanking(m.ranking); } else if(m.type==='cooldown'){ cooldownOverrideRemaining=m.remaining; } else if(m.type==='me'){ if(m.user){ me=m.user; boughtColors=new Set(me.boughtColors); lastPlaceTs=me.lastPlaceTs; updateStatus(); buildLivePalette(); buildExtraColors(); }} else if(m.type==='pong'){ $('#latency').textContent=Math.round(performance.now()-pingStart); setTimeout(()=>{ pingStart=performance.now(); ws.send(JSON.stringify({type:'ping'})); },5000); } }; ws.onclose=()=>setTimeout(connectWS,3000); }
+function connectWS(){ if(!me) return; ws=new WebSocket((location.protocol==='https:'?'wss':'ws')+'://'+location.host+'/ws'); ws.onopen=()=>{ pingStart=performance.now(); ws.send(JSON.stringify({type:'ping'})); }; ws.onmessage=e=>{ const m=JSON.parse(e.data); if(m.type==='init'){ if(m.user){ me=m.user; boughtColors=new Set(me.boughtColors); lastPlaceTs=me.lastPlaceTs; updateStatus(); buildLivePalette(); buildExtraColors(); enableUI(); } boardW=m.width; boardH=m.height; drawBoardSparse(m.defaultColor, m.pixels||[]); $('#totalPixelsHUD').textContent=m.totalPixels; updateRanking(m.ranking); const p=qs(); const x=p.get('x'), y=p.get('y'); if(x&&y) highlightCoord(+x,+y); } else if(m.type==='pixel'){ setPixel(m.x,m.y,m.color,m.username,m.placedAt); $('#totalPixelsHUD').textContent=m.totalPixels; ws.send(JSON.stringify({type:'ping'})); } else if(m.type==='player_count'){ $('#playerCount').textContent=m.count; } else if(m.type==='ranking'){ updateRanking(m.ranking); } else if(m.type==='cooldown'){ cooldownOverrideRemaining=m.remaining; } else if(m.type==='me'){ if(m.user){ me=m.user; boughtColors=new Set(me.boughtColors); lastPlaceTs=me.lastPlaceTs; updateStatus(); buildLivePalette(); buildExtraColors(); }} else if(m.type==='pong'){ $('#latency').textContent=Math.round(performance.now()-pingStart); setTimeout(()=>{ pingStart=performance.now(); ws.send(JSON.stringify({type:'ping'})); },5000); } }; ws.onclose=()=>setTimeout(connectWS,3000); }
 function updateRanking(list){ const el=$('#rankingList'); el.innerHTML=''; list.forEach(r=>{ const li=document.createElement('li'); li.textContent=r.username+': '+r.pixels_placed; el.appendChild(li); }); }
-board.addEventListener('mousemove', e=>{ const rect=board.getBoundingClientRect(); const relX=e.clientX-rect.left, relY=e.clientY-rect.top; const x=Math.floor(offsetX + relX/viewScale); const y=Math.floor(offsetY + relY/viewScale); $('#boardCoords').textContent=`(${x},${y}) ${selectedColor||''}`; });
+const hoverBox=document.createElement('div'); hoverBox.style.position='fixed'; hoverBox.style.pointerEvents='none'; hoverBox.style.background='rgba(0,0,0,0.75)'; hoverBox.style.padding='4px 6px'; hoverBox.style.borderRadius='4px'; hoverBox.style.fontSize='10px'; hoverBox.style.color='#fff'; hoverBox.style.fontFamily='system-ui,sans-serif'; hoverBox.style.zIndex='70'; hoverBox.style.display='none'; document.body.appendChild(hoverBox);
+function fmtTime(ts){ if(!ts) return ''; const d=new Date(ts*1000); return d.toISOString().replace('T',' ').substring(11,19); }
+board.addEventListener('mousemove', e=>{ const rect=board.getBoundingClientRect(); const relX=e.clientX-rect.left, relY=e.clientY-rect.top; const x=Math.floor(offsetX + relX/viewScale); const y=Math.floor(offsetY + relY/viewScale); $('#boardCoords').textContent=`(${x},${y}) ${selectedColor||''}`; const meta=pixelMeta.get(x+','+y); if(meta){ hoverBox.innerHTML=`<strong>${meta.u||'?'}</strong><br>${fmtTime(meta.t)}`; hoverBox.style.left=(e.clientX+12)+'px'; hoverBox.style.top=(e.clientY+12)+'px'; hoverBox.style.display='block'; } else { hoverBox.style.display='none'; } });
+board.addEventListener('mouseleave',()=>{ hoverBox.style.display='none'; });
 board.addEventListener('mousedown', e=>{ if(e.button===0){ isPanning=true; panStart={x:e.clientX,y:e.clientY,ox:offsetX,oy:offsetY,moved:false}; } else if(e.button===1||e.button===2){ isPanning=true; panStart={x:e.clientX,y:e.clientY,ox:offsetX,oy:offsetY,moved:false}; e.preventDefault(); }});
 window.addEventListener('mousemove', e=>{ if(isPanning){ const dx=(e.clientX-panStart.x)/viewScale; const dy=(e.clientY-panStart.y)/viewScale; if(Math.abs(dx)>0.5||Math.abs(dy)>0.5) panStart.moved=true; offsetX=panStart.ox - dx; offsetY=panStart.oy - dy; constrainView(); redraw(); }});
 window.addEventListener('mouseup', ()=>{ isPanning=false; });
