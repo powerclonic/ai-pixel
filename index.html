@@ -66,6 +66,8 @@ let config, me, ws, selectedColor=null, baseCooldown=5, boardW=256, boardH=144, 
 let viewScale=4, minScale=1, maxScale=40, offsetX=0, offsetY=0; let isPanning=false; let panStart={x:0,y:0,ox:0,oy:0,moved:false};
 const offscreen=document.createElement('canvas'); const offctx=offscreen.getContext('2d');
 let pixelMeta=new Map(); // key "x,y" -> {u,t}
+// Touch state
+let touchPanning=false; let pinchZooming=false; let pinchStartDist=0; let pinchStartScale=1; let pinchCenter={x:0,y:0}; let singleTouchStart={x:0,y:0,time:0};
 function qs(){ return new URLSearchParams(location.search); }
 function updateURLCoords(x,y){ const p=qs(); p.set('x',x); p.set('y',y); history.replaceState(null,'','?'+p.toString()); }
 function updateMinScale(){ minScale = Math.min(window.innerWidth/boardW, window.innerHeight/boardH); if(viewScale<minScale){ viewScale=minScale; centerBoard(); }}
@@ -127,6 +129,34 @@ function canPlace(){ if(!me||!selectedColor) return false; if(me.storedPixels>0)
 board.addEventListener('click', e=>{ if(isPanning && panStart.moved) return; if(!canPlace()) return; const rect=board.getBoundingClientRect(); const relX=e.clientX-rect.left, relY=e.clientY-rect.top; const x=Math.floor(offsetX + relX/viewScale); const y=Math.floor(offsetY + relY/viewScale); updateURLCoords(x,y); ws?.send(JSON.stringify({type:'place',x,y,color:selectedColor})); /* cooldown handled server-side; local optimistic updates not needed */ });
 board.addEventListener('wheel', e=>{ e.preventDefault(); const direction=Math.sign(e.deltaY); const old=viewScale; if(direction>0) viewScale=Math.max(minScale, viewScale/1.15); else viewScale=Math.min(maxScale, viewScale*1.15); const rect=board.getBoundingClientRect(); const cx=(e.clientX-rect.left)/old + offsetX; const cy=(e.clientY-rect.top)/old + offsetY; offsetX = cx - (e.clientX-rect.left)/viewScale; offsetY = cy - (e.clientY-rect.top)/viewScale; constrainView(); redraw(); }, {passive:false});
 window.addEventListener('contextmenu', e=>{ if(e.target===board) e.preventDefault(); });
+// ----- Touch / Mobile Controls -----
+function touchPoint(e, index){ const t=e.touches[index]; const rect=board.getBoundingClientRect(); return {x:t.clientX-rect.left, y:t.clientY-rect.top, clientX:t.clientX, clientY:t.clientY}; }
+function distance(a,b){ const dx=a.x-b.x, dy=a.y-b.y; return Math.hypot(dx,dy); }
+board.addEventListener('touchstart', e=>{
+  if(e.touches.length===1){
+    const p=touchPoint(e,0); touchPanning=true; pinchZooming=false; singleTouchStart={x:p.clientX,y:p.clientY,time:performance.now()};
+    panStart={x:p.clientX,y:p.clientY,ox:offsetX,oy:offsetY,moved:false};
+  } else if(e.touches.length===2){
+    // Begin pinch
+    pinchZooming=true; touchPanning=false; const p0=touchPoint(e,0), p1=touchPoint(e,1); pinchStartDist=distance(p0,p1); pinchStartScale=viewScale; pinchCenter={x:(p0.x+p1.x)/2, y:(p0.y+p1.y)/2};
+  }
+}, {passive:true});
+board.addEventListener('touchmove', e=>{
+  if(pinchZooming && e.touches.length===2){ e.preventDefault(); const p0=touchPoint(e,0), p1=touchPoint(e,1); const dist=distance(p0,p1); if(pinchStartDist>0){ const factor=dist/pinchStartDist; let newScale=pinchStartScale*factor; newScale=Math.min(maxScale, Math.max(minScale,newScale)); const rect=board.getBoundingClientRect(); const canvasPointX=pinchCenter.x/viewScale + offsetX; const canvasPointY=pinchCenter.y/viewScale + offsetY; // update scale
+      viewScale=newScale; // keep focal point stable
+      offsetX = canvasPointX - pinchCenter.x/viewScale; offsetY = canvasPointY - pinchCenter.y/viewScale; constrainView(); redraw(); }
+  } else if(touchPanning && e.touches.length===1){ e.preventDefault(); const p=touchPoint(e,0); const dx=(p.clientX-panStart.x)/viewScale; const dy=(p.clientY-panStart.y)/viewScale; if(Math.abs(dx)>0.3||Math.abs(dy)>0.3) panStart.moved=true; offsetX=panStart.ox - dx; offsetY=panStart.oy - dy; constrainView(); redraw(); }
+}, {passive:false});
+function handleTap(xClient,yClient){ const rect=board.getBoundingClientRect(); const relX=xClient-rect.left, relY=yClient-rect.top; const x=Math.floor(offsetX + relX/viewScale); const y=Math.floor(offsetY + relY/viewScale); if(canPlace()) { updateURLCoords(x,y); ws?.send(JSON.stringify({type:'place',x,y,color:selectedColor})); } }
+board.addEventListener('touchend', e=>{
+  if(pinchZooming && e.touches.length===0) pinchZooming=false;
+  if(touchPanning && e.touches.length===0){
+    // Potential tap
+    const dt=performance.now()-singleTouchStart.time; if(!panStart.moved && dt<300){ handleTap(singleTouchStart.x, singleTouchStart.y); }
+    touchPanning=false;
+  }
+}, {passive:true});
+board.addEventListener('touchcancel', ()=>{ touchPanning=false; pinchZooming=false; }, {passive:true});
 function highlightCoord(x,y){ ctx.save(); ctx.strokeStyle='rgba(255,255,255,0.85)'; ctx.lineWidth=0.5; ctx.strokeRect(x+0.05,y+0.05,0.9,0.9); ctx.restore(); }
 $('#btnAuth').addEventListener('click',async e=>{ e.preventDefault(); if(me){ await fetch('/api/logout',{method:'POST'}); me=null; disableUI(); location.reload(); return; } authDialog.showModal(); });
 $('#authForm').addEventListener('submit',async e=>{ e.preventDefault(); const fd=new FormData(e.target); const body={username:fd.get('username'),password:fd.get('password')}; const action=e.submitter.value; try{ await postJSON('/api/'+action, body); authDialog.close(); await loadMe(); connectWS(); }catch(err){ alert('Error: '+err); } });
